@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY openenv/ ./openenv/
-COPY app.py .
+COPY server/ ./server/
 COPY inference.py .
 
 # Set environment variables
@@ -33,8 +33,8 @@ USER appuser
 # Expose port for API (HF Spaces uses 7860)
 EXPOSE 7860
 
-# Default command - run FastAPI app
-CMD ["python", "app.py"]
+# Default command - run FastAPI app via entry point
+CMD ["server"]
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

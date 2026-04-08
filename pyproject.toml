@@ -24,6 +24,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "openenv>=0.2.0",
     "pydantic>=2.0.0",
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
@@ -45,7 +46,7 @@ Repository = "https://github.com/bobby-nandigam/meta_worker.git"
 Documentation = "https://github.com/bobby-nandigam/meta_worker/blob/main/README.md"
 
 [tool.setuptools]
-packages = ["openenv"]
+packages = ["openenv", "server"]
 
 [project.scripts]
-meta-openenv = "app:main"
+server = "server.app:main"
