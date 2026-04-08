@@ -1,0 +1,163 @@
+name: MetaOpenEnv
+version: "1.0.0"
+description: Real-world task simulation environment with multiple task types and difficulty levels
+
+# Environment specification
+specification: openenv
+specification_version: "1.0"
+
+# Metadata
+metadata:
+  author: "Meta AI"
+  created: "2024-04-08"
+  tags:
+    - openenv
+    - task-simulation
+    - real-world
+    - multi-task
+  category: real-world-tasks
+
+# Tasks
+tasks:
+  - id: email_triage
+    name: Email Triage
+    description: Classify emails into categories (work, personal, spam, promotional)
+    difficulty: easy
+    max_steps: 100
+    observation_space:
+      type: dict
+      keys:
+        - emails (list)
+        - classified_count (int)
+        - total_emails (int)
+        - remaining (list)
+    action_space:
+      type: object
+      action_types:
+        - classify
+        - skip
+        - delete
+      required_fields:
+        - action_type
+        - target_id
+      optional_fields:
+        - classification
+        - reasoning
+        - confidence
+    
+  - id: code_review
+    name: Code Review
+    description: Review code for bugs and issues, decide on approval or changes
+    difficulty: medium
+    max_steps: 100
+    observation_space:
+      type: dict
+      keys:
+        - code_blocks (list)
+        - flagged_count (int)
+        - total_issues (int)
+    action_space:
+      type: object
+      action_types:
+        - flag_issue
+        - approve
+        - request_changes
+      required_fields:
+        - action_type
+      optional_fields:
+        - target_id
+        - reasoning
+        - severity
+    
+  - id: content_moderation
+    name: Content Moderation
+    description: Moderate content for harmful or policy-violating posts
+    difficulty: hard
+    max_steps: 150
+    observation_space:
+      type: dict
+      keys:
+        - items (list)
+        - reviewed_count (int)
+        - total_items (int)
+        - remaining (list)
+    action_space:
+      type: object
+      action_types:
+        - flag_content
+        - skip_review
+      required_fields:
+        - action_type
+      optional_fields:
+        - target_id
+        - category
+        - reasoning
+        - confidence
+
+# Reward function
+reward:
+  type: trajectory-based
+  components:
+    - action_reward (primary outcome)
+    - progress_reward (incremental feedback)
+    - efficiency_bonus (step efficiency)
+    - destructive_penalty (undesirable actions)
+    - completion_bonus (episode completion)
+    - loop_penalty (infinite loop detection)
+  range: [-1.0, +1.0]
+  description: "Trajectory-based reward function with immediate step feedback and episode completion bonus"
+
+# Graders
+graders:
+  email_triage:
+    type: accuracy-based
+    metrics:
+      - correct_classifications (40%)
+      - efficiency (20%)
+      - destructive_actions (-20%)
+  code_review:
+    type: precision-based
+    metrics:
+      - bug_identification (45%)
+      - decision_correctness (25%)
+      - feedback_quality (30%)
+  content_moderation:
+    type: f1-based
+    metrics:
+      - harmful_detection (35%)
+      - false_positive_prevention (35%)
+      - consistency (30%)
+
+# Example usage
+example_reset: |
+  from openenv import OpenEnv, TaskType
+  
+  env = OpenEnv()
+  observation = env.reset(task_type=TaskType.EMAIL_TRIAGE)
+
+example_step: |
+  from openenv import Action
+  
+  action = Action(
+    action_type="classify",
+    target_id="email_0",
+    classification="work",
+    confidence=0.95,
+    reasoning="From work email address"
+  )
+  
+  result = env.step(action)
+
+# Validation
+validation:
+  schema_version: "1.0"
+  required_methods:
+    - reset()
+    - step(action)
+    - state()
+    - evaluate_episode()
+  required_models:
+    - Observation (Pydantic)
+    - Action (Pydantic)
+    - Reward (Pydantic)
+    - StepResult (Pydantic)
