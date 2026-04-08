@@ -1,3 +1,13 @@
+---
+title: meta_worker
+emoji: 🚀
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_file: app.py
+pinned: false
+---
+
 # MetaOpenEnv: Real-World Task Simulation Environment
 
 A comprehensive OpenEnv-compliant environment for evaluating AI agents on real-world task simulation. This environment provides three progressively challenging tasks: **Email Triage**, **Code Review**, and **Content Moderation**, each with programmatic graders and meaningful reward functions.
