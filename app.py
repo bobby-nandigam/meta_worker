@@ -5,8 +5,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
+import traceback
 
-from openenv import OpenEnv, TaskType, Action
+try:
+    from openenv import OpenEnv, TaskType, Action
+    ENV_LOADED = True
+except Exception as e:
+    print(f"Warning: Could not load openenv: {e}")
+    ENV_LOADED = False
+    traceback.print_exc()
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -25,7 +32,13 @@ app.add_middleware(
 )
 
 # Global environment instance
-env = OpenEnv()
+env = None
+if ENV_LOADED:
+    try:
+        env = OpenEnv()
+    except Exception as e:
+        print(f"Warning: Could not initialize OpenEnv: {e}")
+        traceback.print_exc()
 
 
 # Request/Response models
@@ -108,19 +121,32 @@ def index():
 def test():
     """Quick test endpoint."""
     try:
+        if not ENV_LOADED:
+            return {"status": "warning", "message": "OpenEnv not loaded", "env_loaded": False}
+        
+        if env is None:
+            return {"status": "warning", "message": "Environment not initialized", "env_loaded": True}
+        
         obs = env.reset(TaskType.EMAIL_TRIAGE)
         return {
             "status": "ok",
             "message": "Environment working",
             "task": obs.task_name,
-            "test": "Use /reset and /step endpoints with POST requests"
+            "env_loaded": True
         }
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        print(f"Error in test: {e}")
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "message": str(e),
+            "env_loaded": ENV_LOADED,
+            "traceback": traceback.format_exc()
+        }
 
 
 # Reset endpoint
-@app.post("/reset", response_model=ResetResponse)
+@app.post("/reset", response_model=Optional[ResetResponse])
 def reset(request: Optional[ResetRequest] = None):
     """
     Reset the environment and start a new episode.
@@ -132,6 +158,16 @@ def reset(request: Optional[ResetRequest] = None):
         ResetResponse with initial observation
     """
     try:
+        if not ENV_LOADED or env is None:
+            return {
+                "status": "warning",
+                "task_id": "test_task",
+                "task_type": "email_triage",
+                "task_name": "Test Mode",
+                "observation": {"test": "Environment not loaded"},
+                "message": "Running in test mode - environment not initialized",
+            }
+        
         # Use default if no request provided
         if request is None:
             request = ResetRequest()
@@ -159,6 +195,8 @@ def reset(request: Optional[ResetRequest] = None):
             message=f"Environment reset with task: {observation.task_name}",
         )
     except Exception as e:
+        print(f"Error in reset: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -298,7 +336,16 @@ if __name__ == "__main__":
     import os
     import uvicorn
     
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.getenv("PORT", 7860))
     host = os.getenv("HOST", "0.0.0.0")
     
-    uvicorn.run(app, host=host, port=port)
+    print(f"\n🚀 Starting MetaOpenEnv API on {host}:{port}")
+    print(f"📖 API Docs: http://{host}:{port}/docs")
+    print(f"🧪 Test: http://{host}:{port}/test\n")
+    
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info"
+    )
