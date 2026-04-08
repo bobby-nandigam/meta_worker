@@ -2,6 +2,7 @@
 """FastAPI application for OpenEnv environment."""
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 
@@ -12,6 +13,15 @@ app = FastAPI(
     title="MetaOpenEnv API",
     description="Real-world task simulation environment API",
     version="1.0.0",
+)
+
+# Add CORS middleware for HF Spaces
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Global environment instance
@@ -88,13 +98,30 @@ def index():
             "GET /health": "Health check",
             "GET /config": "Get environment configuration",
             "POST /evaluate": "Evaluate completed episode",
+            "GET /test": "Quick test endpoint",
         }
     }
 
 
+# Test endpoint
+@app.get("/test")
+def test():
+    """Quick test endpoint."""
+    try:
+        obs = env.reset(TaskType.EMAIL_TRIAGE)
+        return {
+            "status": "ok",
+            "message": "Environment working",
+            "task": obs.task_name,
+            "test": "Use /reset and /step endpoints with POST requests"
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 # Reset endpoint
 @app.post("/reset", response_model=ResetResponse)
-def reset(request: ResetRequest):
+def reset(request: Optional[ResetRequest] = None):
     """
     Reset the environment and start a new episode.
     
@@ -105,6 +132,10 @@ def reset(request: ResetRequest):
         ResetResponse with initial observation
     """
     try:
+        # Use default if no request provided
+        if request is None:
+            request = ResetRequest()
+        
         # Map string task type to TaskType enum
         task_type_map = {
             "email_triage": TaskType.EMAIL_TRIAGE,
@@ -133,7 +164,7 @@ def reset(request: ResetRequest):
 
 # Step endpoint
 @app.post("/step", response_model=StepResponse)
-def step(request: ActionRequest):
+def step(request: Optional[ActionRequest] = None):
     """
     Execute one step in the environment.
     
@@ -145,7 +176,10 @@ def step(request: ActionRequest):
     """
     try:
         if env.current_task is None:
-            raise RuntimeError("Environment not initialized. Call /reset first.")
+            raise RuntimeError("Environment not initialized. Call POST /reset first.")
+        
+        if request is None:
+            raise ValueError("Request body required. Provide action_type and other fields.")
         
         # Create Action object
         action = Action(
@@ -153,6 +187,7 @@ def step(request: ActionRequest):
             target_id=request.target_id,
             confidence=request.confidence,
             reasoning=request.reasoning,
+            classification=request.classification,
         )
         
         # Execute step
