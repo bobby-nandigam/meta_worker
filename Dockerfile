@@ -9,16 +9,14 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
-COPY requirements.txt .
+# Copy all files
+COPY . /app
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY openenv/ ./openenv/
-COPY server/ ./server/
-COPY inference.py .
+# Install package for imports
+RUN pip install --no-cache-dir -e .
 
 # Set environment variables
 ENV HF_TOKEN=""
@@ -33,8 +31,8 @@ USER appuser
 # Expose port for API (HF Spaces uses 7860)
 EXPOSE 7860
 
-# Default command - run FastAPI app via entry point
-CMD ["server"]
+# Default command - run FastAPI app
+CMD ["python", "server/app.py"]
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
