@@ -15,9 +15,6 @@ COPY . /app
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install package for imports
-RUN pip install --no-cache-dir -e .
-
 # Set environment variables
 ENV HF_TOKEN=""
 ENV PYTHONUNBUFFERED=1
