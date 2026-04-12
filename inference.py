@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
-Baseline Inference Script for Autonomous Work OS
-Uses OpenAI API to evaluate agent performance
-Credentials read from HF_TOKEN environment variable
+Inference Script for Meta OpenEnv - Follows exact hackathon specification
 """
 
 import os
 import json
 import sys
-from typing import Dict, List
+from typing import Dict, List, Optional
 from datetime import datetime
 
 # Import with error handling
@@ -16,7 +14,7 @@ try:
     from openai import OpenAI
     from pydantic import BaseModel
     
-    # Import environment and models - CORRECTED PATHS
+    # Import environment and models
     from openenv import (
         OpenEnv, Observation, Action, Reward, TaskType
     )
@@ -27,23 +25,52 @@ except ImportError as e:
     print("[END] success=false steps=1 score=0.00 rewards=0.00", flush=True)
     sys.exit(0)
 
-# Environment variables - EXACTLY as specified in sample
+# Environment variables - EXACT as per spec
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-3.5-turbo")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-# Optional - if you use from_docker_image():
+# Optional
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+BENCHMARK = "meta_openenv"
+MAX_STEPS = 20
+TEMPERATURE = 0.3
+MAX_TOKENS = 500
 
 
 class BaselineConfig(BaseModel):
     """Configuration for baseline evaluation"""
     model_name: str = MODEL_NAME
     api_base_url: str = API_BASE_URL
-    temperature: float = 0.3
-    max_tokens: int = 500
+    temperature: float = TEMPERATURE
+    max_tokens: int = MAX_TOKENS
     num_episodes: int = 3
     timeout_seconds: int = 30
+
+
+# LOGGING FUNCTIONS - EXACT FORMAT PER SPEC
+def log_start(task: str, env: str, model: str) -> None:
+    """Log episode start in exact spec format"""
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    """Log step in exact spec format"""
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    """Log episode end in exact spec format"""
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
 class InferenceClient:
@@ -253,148 +280,123 @@ def evaluate_task(
     inference_client: InferenceClient,
     num_episodes: int = 3
 ) -> Dict[str, float]:
-    """
-    Evaluate agent performance on a specific task
+    """Evaluate agent performance on a specific task"""
     
-    Returns:
-        scores: Dict with episode scores and average
-    """
-    
-    # EMIT [START] WITH REQUIRED FIELDS: task, env, model
-    print(f"[START] task={task_type} env=meta_openenv model={MODEL_NAME or 'gpt-3.5-turbo'}", flush=True)
+    log_start(task=task_type, env=BENCHMARK, model=MODEL_NAME or "gpt-3.5-turbo")
     
     agent = AutonomousAgent(inference_client)
     episode_scores = []
-    total_steps = 0
     all_rewards = []
+    total_steps = 0
+    success = False
     
-    for episode in range(num_episodes):
-        # Initialize environment
-        env = OpenEnv(task_type=task_type)
-        observation = env.reset()
+    try:
+        for episode in range(num_episodes):
+            # Initialize environment
+            env = OpenEnv(task_type=task_type)
+            observation = env.reset()
+            
+            done = False
+            step_count = 0
+            
+            while not done and step_count < MAX_STEPS:
+                # Agent decides action
+                action = agent.decide_action(observation)
+                
+                # Execute action
+                observation, reward, done, info = env.step(action)
+                
+                step_count += 1
+                total_steps += 1
+                
+                # Extract reward value
+                episode_reward = reward.immediate_reward if hasattr(reward, 'immediate_reward') else 0.0
+                all_rewards.append(episode_reward)
+                
+                # Log step in EXACT spec format
+                action_str = str(action.action_type) if hasattr(action, 'action_type') else "action"
+                error_msg = None
+                log_step(
+                    step=total_steps,
+                    action=action_str,
+                    reward=episode_reward,
+                    done=done,
+                    error=error_msg
+                )
+            
+            # Grade episode
+            score = env.grade()
+            episode_scores.append(score)
         
-        done = False
-        step_count = 0
-        max_steps = 20
+        # Compute statistics
+        avg_score = sum(episode_scores) / len(episode_scores) if episode_scores else 0.0
+        avg_score = min(max(avg_score, 0.0), 1.0)  # Clamp to [0, 1]
+        success = avg_score > 0.5
         
-        while not done and step_count < max_steps:
-            # Agent decides action
-            action = agent.decide_action(observation)
-            
-            # Execute action
-            observation, reward, done, info = env.step(action)
-            
-            step_count += 1
-            total_steps += 1
-            
-            # Track reward
-            episode_reward = reward.immediate_reward if hasattr(reward, 'immediate_reward') else 0.0
-            all_rewards.append(episode_reward)
-            
-            # EMIT [STEP] WITH ALL REQUIRED FIELDS: step, action, reward, done, error
-            action_str = str(action.action_type) if hasattr(action, 'action_type') else "unknown"
-            error_msg = "null"
-            print(f"[STEP] step={total_steps} action={action_str} reward={episode_reward:.2f} done={str(done).lower()} error={error_msg}", flush=True)
-        
-        # Grade episode
-        score = env.grade()
-        episode_scores.append(score)
+    except Exception as e:
+        # On exception, use defaults
+        avg_score = 0.0
+        success = False
+        total_steps = max(1, total_steps)
+        all_rewards = all_rewards if all_rewards else [0.0]
     
-    # Compute statistics
-    avg_score = sum(episode_scores) / len(episode_scores) if episode_scores else 0.0
-    
-    # Format rewards list as comma-separated with 2 decimals
-    rewards_str = ",".join([f"{r:.2f}" for r in all_rewards])
-    
-    # EMIT [END] WITH ALL REQUIRED FIELDS: success, steps, score, rewards
-    success = "true" if avg_score > 0.5 else "false"
-    print(f"[END] success={success} steps={total_steps} score={avg_score:.2f} rewards={rewards_str}", flush=True)
+    finally:
+        # ALWAYS emit [END], even on exception (per spec)
+        log_end(
+            success=success,
+            steps=total_steps,
+            score=avg_score,
+            rewards=all_rewards
+        )
     
     return {
         "task_type": task_type,
         "num_episodes": num_episodes,
-        "scores": episode_scores,
-        "average": avg_score,
-        "max": max(episode_scores) if episode_scores else 0.0,
-        "min": min(episode_scores) if episode_scores else 0.0,
-        "std_dev": (sum((s - avg_score) ** 2 for s in episode_scores) / len(episode_scores)) ** 0.5 if episode_scores else 0.0
+        "scores": episode_scores if 'episode_scores' in locals() else [],
+        "average": avg_score if 'avg_score' in locals() else 0.0,
     }
 
 
 def main():
     """Main evaluation loop"""
     
-    # GUARANTEED OUTPUT - Print immediately in EXACT spec format
-    # This ensures validator finds the required blocks even if something fails
-    print("[START] task=email_triage env=meta_openenv model=gpt-3.5-turbo", flush=True)
-    print("[STEP] step=1 action=test reward=0.50 done=false error=null", flush=True)
-    print("[END] success=true steps=1 score=0.75 rewards=0.50", flush=True)
-    
-    try:
-        config = BaselineConfig()
-    except Exception as e:
-        return
+    config = BaselineConfig()
     
     # Check if HF_TOKEN is available
     if not HF_TOKEN:
-        # Token missing - guaranteed output already printed, so validator passes
+        log_start(task="error", env=BENCHMARK, model=MODEL_NAME or "gpt-3.5-turbo")
+        log_step(step=1, action="none", reward=0.0, done=True, error="HF_TOKEN not set")
+        log_end(success=False, steps=1, score=0.0, rewards=[0.0])
         return
     
     # Initialize inference client
     try:
         client = InferenceClient()
     except Exception as e:
-        # Client failed - guaranteed output already printed, so validator passes
+        log_start(task="error", env=BENCHMARK, model=MODEL_NAME or "gpt-3.5-turbo")
+        log_step(step=1, action="none", reward=0.0, done=True, error=str(e))
+        log_end(success=False, steps=1, score=0.0, rewards=[0.0])
         return
     
-    # Try to run actual evaluation for ALL tasks
-    all_results = {
-        "timestamp": datetime.now().isoformat(),
-        "config": config.dict(),
-        "task_results": []
-    }
-    
+    # Evaluate all tasks
     task_types = ["email_triage", "code_review", "data_cleaning"]
     
     for task_type in task_types:
         try:
-            result = evaluate_task(
+            evaluate_task(
                 task_type=task_type,
                 inference_client=client,
                 num_episodes=config.num_episodes
             )
-            all_results["task_results"].append(result)
-            
         except Exception as e:
-            # Task failed - but guaranteed output already printed above
-            all_results["task_results"].append({
-                "task_type": task_type,
-                "error": str(e)
-            })
-    
-    # Aggregate results
-    avg_scores = [r["average"] for r in all_results["task_results"] if "average" in r]
-    all_results["summary"] = {
-        "overall_average": sum(avg_scores) / len(avg_scores) if avg_scores else 0.0,
-        "difficulty_levels": {
-            "easy": 0.0,
-            "medium": 0.0,
-            "hard": 0.0
-        }
-    }
-    
-    # Save results
-    results_file = "evaluation_results.json"
-    with open(results_file, "w") as f:
-        json.dump(all_results, f, indent=2)
-    
-    return all_results
+            # log_end is called in finally block inside evaluate_task
+            pass
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # Last resort - ensure output in EXACT spec format
-        print("[START] task=error env=meta_openenv model=gpt-3.5-turbo", flush=True)
-        print("[STEP] step=1 action=none reward=0.00 done=true error=null", flush=True)
-        print("[END] success=false steps=1 score=0.00 rewards=0.00", flush=True)
+        # Last resort fallback - ensure output in spec format
+        log_start(task="error", env=BENCHMARK, model=MODEL_NAME or "gpt-3.5-turbo")
+        log_step(step=1, action="none", reward=0.0, done=True, error=str(e))
+        log_end(success=False, steps=1, score=0.0, rewards=[0.0])
