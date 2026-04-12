@@ -9,6 +9,7 @@ import traceback
 import subprocess
 import sys
 import os
+import os
 
 try:
     from openenv import OpenEnv, TaskType, Action
@@ -388,9 +389,7 @@ def inference():
         raise HTTPException(status_code=500, detail=error_msg)
 
 
-    import os
-    import uvicorn
-    
+if __name__ == "__main__":
     port = int(os.getenv("PORT", 7860))
     host = os.getenv("HOST", "0.0.0.0")
     
@@ -398,6 +397,7 @@ def inference():
     print(f"📖 API Docs: http://{host}:{port}/docs")
     print(f"🧪 Test: http://{host}:{port}/test\n")
     
+    import uvicorn
     uvicorn.run(
         app,
         host=host,
