@@ -34,7 +34,7 @@ except ImportError as e:
 # Environment variables
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-3.5-turbo")
-HF_TOKEN = os.getenv("HF_TOKEN")
+HF_TOKEN = os.getenv("meta_work") or os.getenv("HF_TOKEN")
 
 
 class BaselineConfig(BaseModel):
