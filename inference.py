@@ -8,33 +8,25 @@ Credentials read from HF_TOKEN environment variable
 import os
 import json
 import sys
-import logging
 from typing import Dict, List
 from datetime import datetime
 
-# Setup logging to suppress non-critical messages
-logging.basicConfig(level=logging.CRITICAL)
-logger = logging.getLogger(__name__)
+from openai import OpenAI
+from pydantic import BaseModel
 
-try:
-    from openai import OpenAI
-    from pydantic import BaseModel
-    
-    # Import environment and models
-    from environments.openenv import (
-        AutonomousWorkOSEnv, Observation, Action, Reward, 
-        TaskType
-    )
-except ImportError as e:
-    print(f"[START] task=import_error", flush=True)
-    print(f"[STEP] step=1 reward=0.0", flush=True)
-    print(f"[END] task=import_error score=0.0 steps=0", flush=True)
-    sys.exit(0)
+# Import environment and models
+from environments.openenv import (
+    AutonomousWorkOSEnv, Observation, Action, Reward, 
+    TaskType
+)
 
-# Environment variables
+# Environment variables - EXACTLY as specified in sample
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-3.5-turbo")
-HF_TOKEN = os.getenv("meta_work") or os.getenv("HF_TOKEN")
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+# Optional - if you use from_docker_image():
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 
 class BaselineConfig(BaseModel):
@@ -55,9 +47,6 @@ class InferenceClient:
         self.api_key = api_key or HF_TOKEN
         self.api_base = api_base or API_BASE_URL
         self.model = model or MODEL_NAME
-        
-        if not self.api_key:
-            raise ValueError("API key is required")
         
         self.client = OpenAI(api_key=self.api_key, base_url=self.api_base)
     
@@ -243,7 +232,6 @@ Now analyze and respond with JSON:
             )
             
         except Exception as e:
-            logger.error(f"Failed to parse action: {e}")
             # Fallback to first available action
             return Action(
                 action_type=observation.available_actions[0],
@@ -267,98 +255,60 @@ def evaluate_task(
     
     print(f"[START] task={task_type}", flush=True)
     
-    try:
-        agent = AutonomousAgent(inference_client)
-        episode_scores = []
-        total_steps = 0
+    agent = AutonomousAgent(inference_client)
+    episode_scores = []
+    total_steps = 0
+    
+    for episode in range(num_episodes):
+        # Initialize environment
+        env = AutonomousWorkOSEnv(task_type=task_type)
+        observation = env.reset()
         
-        for episode in range(num_episodes):
-            try:
-                # Initialize environment
-                env = AutonomousWorkOSEnv(task_type=task_type)
-                observation = env.reset()
-                
-                done = False
-                step_count = 0
-                max_steps = 20
-                episode_reward = 0.0
-                
-                while not done and step_count < max_steps:
-                    # Agent decides action
-                    action = agent.decide_action(observation)
-                    
-                    # Execute action
-                    observation, reward, done, info = env.step(action)
-                    
-                    episode_reward += reward.immediate_reward
-                    step_count += 1
-                    total_steps += 1
-                    
-                    # Output structured step info
-                    print(f"[STEP] step={total_steps} reward={reward.immediate_reward:.3f}", flush=True)
-                
-                # Grade episode
-                score = env.grade()
-                episode_scores.append(score)
-            except Exception as e:
-                print(f"[STEP] step=1 reward=0.0", flush=True)
-                total_steps += 1
-                episode_scores.append(0.0)
+        done = False
+        step_count = 0
+        max_steps = 20
         
-        # Compute statistics
-        avg_score = sum(episode_scores) / len(episode_scores) if episode_scores else 0.0
+        while not done and step_count < max_steps:
+            # Agent decides action
+            action = agent.decide_action(observation)
+            
+            # Execute action
+            observation, reward, done, info = env.step(action)
+            
+            step_count += 1
+            total_steps += 1
+            
+            # Output structured step info - EXACTLY as required
+            print(f"[STEP] step={total_steps} reward={reward.immediate_reward:.3f}", flush=True)
         
-        print(f"[END] task={task_type} score={avg_score:.4f} steps={total_steps}", flush=True)
-        
-        return {
-            "task_type": task_type,
-            "num_episodes": num_episodes,
-            "scores": episode_scores,
-            "average": avg_score,
-            "max": max(episode_scores) if episode_scores else 0.0,
-            "min": min(episode_scores) if episode_scores else 0.0,
-            "std_dev": (sum((s - avg_score) ** 2 for s in episode_scores) / len(episode_scores)) ** 0.5 if episode_scores else 0.0
-        }
-    except Exception as e:
-        print(f"[STEP] step=1 reward=0.0", flush=True)
-        print(f"[END] task={task_type} score=0.0 steps=1", flush=True)
-        return {
-            "task_type": task_type,
-            "num_episodes": num_episodes,
-            "scores": [],
-            "average": 0.0,
-            "max": 0.0,
-            "min": 0.0,
-            "std_dev": 0.0
-        }
+        # Grade episode
+        score = env.grade()
+        episode_scores.append(score)
+    
+    # Compute statistics
+    avg_score = sum(episode_scores) / len(episode_scores) if episode_scores else 0.0
+    
+    # Output END block - EXACTLY as required
+    print(f"[END] task={task_type} score={avg_score:.4f} steps={total_steps}", flush=True)
+    
+    return {
+        "task_type": task_type,
+        "num_episodes": num_episodes,
+        "scores": episode_scores,
+        "average": avg_score,
+        "max": max(episode_scores) if episode_scores else 0.0,
+        "min": min(episode_scores) if episode_scores else 0.0,
+        "std_dev": (sum((s - avg_score) ** 2 for s in episode_scores) / len(episode_scores)) ** 0.5 if episode_scores else 0.0
+    }
 
 
 def main():
     """Main evaluation loop"""
     
-    try:
-        config = BaselineConfig()
-    except Exception as e:
-        print(f"[START] task=config_error", flush=True)
-        print(f"[STEP] step=1 reward=0.0", flush=True)
-        print(f"[END] task=config_error score=0.0 steps=0", flush=True)
-        return
+    config = BaselineConfig()
     
     # Initialize inference client
-    try:
-        if not HF_TOKEN:
-            raise ValueError("HF_TOKEN not found. Please set HF_TOKEN environment variable")
-        client = InferenceClient()
-    except ValueError as e:
-        print(f"[START] task=error", flush=True)
-        print(f"[STEP] step=1 reward=0.0", flush=True)
-        print(f"[END] task=error score=0.0 steps=0", flush=True)
-        return
-    except Exception as e:
-        print(f"[START] task=error", flush=True)
-        print(f"[STEP] step=1 reward=0.0", flush=True)
-        print(f"[END] task=error score=0.0 steps=0", flush=True)
-        return
+    client = InferenceClient()
     
     # Evaluate all tasks
     all_results = {
@@ -379,25 +329,19 @@ def main():
             all_results["task_results"].append(result)
             
         except Exception as e:
-            print(f"[START] task={task_type}", flush=True)
-            print(f"[STEP] step=1 reward=0.0", flush=True)
-            print(f"[END] task={task_type} score=0.0 steps=0", flush=True)
             all_results["task_results"].append({
                 "task_type": task_type,
                 "error": str(e)
             })
     
     # Aggregate results
+    avg_scores = [r["average"] for r in all_results["task_results"] if "average" in r]
     all_results["summary"] = {
-        "overall_average": (
-            sum(r["average"] for r in all_results["task_results"] 
-                if "average" in r) / 
-            len([r for r in all_results["task_results"] if "average" in r])
-        ) if [r for r in all_results["task_results"] if "average" in r] else 0.0,
+        "overall_average": sum(avg_scores) / len(avg_scores) if avg_scores else 0.0,
         "difficulty_levels": {
-            "easy": 0.0,  # Email triage
-            "medium": 0.0,  # Code review
-            "hard": 0.0  # Data cleaning
+            "easy": 0.0,
+            "medium": 0.0,
+            "hard": 0.0
         }
     }
     
@@ -409,9 +353,4 @@ def main():
     return all_results
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"[START] task=runtime_error", flush=True)
-        print(f"[STEP] step=1 reward=0.0", flush=True)
-        print(f"[END] task=runtime_error score=0.0 steps=0", flush=True)
+    main()
