@@ -6,6 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import traceback
+import subprocess
+import sys
+import os
 
 try:
     from openenv import OpenEnv, TaskType, Action
@@ -105,6 +108,7 @@ def index():
         "version": "1.0.0",
         "documentation": "/docs",
         "endpoints": {
+            "GET /inference": "Run baseline inference evaluation with spec-compliant [START]/[STEP]/[END] output",
             "POST /reset": "Reset environment with task type (email_triage, code_review, content_moderation)",
             "POST /step": "Execute action in current environment",
             "GET /state": "Get current environment state",
@@ -332,7 +336,58 @@ def get_config():
         raise HTTPException(status_code=400, detail=str(e))
 
 
-if __name__ == "__main__":
+# Inference endpoint - run baseline evaluation with structured output
+@app.get("/inference")
+def inference():
+    """
+    Run baseline inference evaluation with spec-compliant output.
+    This endpoint also prints to stdout for validator compatibility.
+    
+    Returns:
+        JSON with inference results and structured output logs
+    """
+    try:
+        # Run inference.py as subprocess to capture output
+        result = subprocess.run(
+            [sys.executable, "inference.py"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=os.path.dirname(os.path.abspath(__file__))
+        )
+        
+        # Also print to stdout so validator can capture it
+        if result.stdout:
+            print(result.stdout, end='', flush=True)
+        if result.stderr:
+            print(result.stderr, end='', file=sys.stderr, flush=True)
+        
+        # Extract structured output blocks
+        output_lines = result.stdout.split('\n') if result.stdout else []
+        structured_output = [line for line in output_lines if line.startswith('[START]') or line.startswith('[STEP]') or line.startswith('[END]')]
+        
+        return {
+            "status": "success" if result.returncode == 0 else "error",
+            "return_code": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "structured_output": structured_output,
+            "message": "Baseline evaluation completed" if result.returncode == 0 else "Baseline evaluation failed",
+        }
+    except subprocess.TimeoutExpired:
+        error_msg = "Inference evaluation timed out after 60 seconds"
+        print(f"[START] task=timeout env=meta_openenv model=gpt-3.5-turbo", flush=True)
+        print(f"[STEP] step=1 action=none reward=0.00 done=true error=null", flush=True)
+        print(f"[END] success=false steps=1 score=0.00 rewards=0.00", flush=True)
+        raise HTTPException(status_code=408, detail=error_msg)
+    except Exception as e:
+        error_msg = f"Inference error: {str(e)}"
+        print(f"[START] task=error env=meta_openenv model=gpt-3.5-turbo", flush=True)
+        print(f"[STEP] step=1 action=none reward=0.00 done=true error=null", flush=True)
+        print(f"[END] success=false steps=1 score=0.00 rewards=0.00", flush=True)
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
     import os
     import uvicorn
     
