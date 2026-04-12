@@ -16,10 +16,9 @@ try:
     from openai import OpenAI
     from pydantic import BaseModel
     
-    # Import environment and models
-    from environments.openenv import (
-        AutonomousWorkOSEnv, Observation, Action, Reward, 
-        TaskType
+    # Import environment and models - CORRECTED PATHS
+    from openenv import (
+        OpenEnv, Observation, Action, Reward, TaskType
     )
 except ImportError as e:
     # Import failed - print guaranteed output before exiting
@@ -269,7 +268,7 @@ def evaluate_task(
     
     for episode in range(num_episodes):
         # Initialize environment
-        env = AutonomousWorkOSEnv(task_type=task_type)
+        env = OpenEnv(task_type=task_type)
         observation = env.reset()
         
         done = False
