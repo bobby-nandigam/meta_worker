@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """FastAPI application for OpenEnv environment."""
 
+import sys
+import os
+sys.path.insert(0, '/app')
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -332,13 +336,8 @@ def get_config():
         raise HTTPException(status_code=400, detail=str(e))
 
 
-if __name__ == "__main__":
-    main()
-
-
 def main():
     """Entry point for the server."""
-    import os
     import uvicorn
     
     port = int(os.getenv("PORT", 7860))
@@ -354,3 +353,7 @@ def main():
         port=port,
         log_level="info"
     )
+
+
+if __name__ == "__main__":
+    main()

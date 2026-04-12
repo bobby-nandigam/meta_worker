@@ -12,8 +12,8 @@ RUN apt-get update && apt-get install -y \
 # Copy all files
 COPY . /app
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install package and dependencies (editable install to include local openenv module)
+RUN pip install --no-cache-dir -e /app
 
 # Set environment variables
 ENV HF_TOKEN=""

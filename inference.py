@@ -123,7 +123,7 @@ class AutonomousAgent:
         action = self._parse_action_response(response, observation)
         
         self.action_history.append({
-            "step": observation.step_number,
+            "step": observation.step_count,
             "action": action.action_type,
             "confidence": action.confidence
         })
@@ -133,14 +133,15 @@ class AutonomousAgent:
     def _build_decision_prompt(self, observation: Observation) -> str:
         """Build few-shot prompt for decision-making"""
         
-        task_type = observation.task_type.value
+        # task_type is already a string because Observation uses use_enum_values=True
+        task_type = observation.task_type if isinstance(observation.task_type, str) else observation.task_type.value
         
         if task_type == "email_triage":
             return self._email_triage_prompt(observation)
         elif task_type == "code_review":
             return self._code_review_prompt(observation)
-        elif task_type == "data_cleaning":
-            return self._data_cleaning_prompt(observation)
+        elif task_type == "content_moderation":
+            return self._content_moderation_prompt(observation)
         else:
             return ""
     
@@ -150,30 +151,27 @@ class AutonomousAgent:
 You are an AI agent for email automation. Analyze the email below and decide the action.
 
 Current Email:
-{json.dumps(observation.current_state.get('current_email', {}), indent=2)}
-
-Context: {observation.context}
-Available Actions: {observation.available_actions}
+{json.dumps(observation.data.get('current_email', {}), indent=2)}
 
 ## Few-Shot Examples:
 
 Example 1:
 Email: From: ceo@meta.com, Subject: "Urgent: Board meeting"
-Decision: {{"action_type": "classify_email", "confidence": 0.95, "category": "work_critical"}}
+Decision: {{"action_type": "classify", "confidence": 0.95, "classification": "work"}}
 
 Example 2:
 Email: From: friend@personal.com, Subject: "Let's catch up"
-Decision: {{"action_type": "classify_email", "confidence": 0.90, "category": "personal"}}
+Decision: {{"action_type": "classify", "confidence": 0.90, "classification": "personal"}}
 
 Example 3:
 Email: From: spam@vendor.com, Subject: "CLICK HERE: Amazing offer!!!"
-Decision: {{"action_type": "classify_email", "confidence": 0.98, "category": "spam"}}
+Decision: {{"action_type": "classify", "confidence": 0.98, "classification": "spam"}}
 
 Now analyze the current email and respond with JSON only:
 {{
-  "action_type": "classify_email",
-  "category": "[work_critical|work_routine|personal|spam]",
-  "confidence": [0.0-1.0],
+  "action_type": "classify",
+  "classification": "work|personal|spam|promotional",
+  "confidence": 0.85,
   "reasoning": "brief explanation"
 }}
 """
@@ -183,60 +181,46 @@ Now analyze the current email and respond with JSON only:
         return f"""
 You are an AI code reviewer. Analyze the code change and identify issues.
 
-PR: {observation.current_state.get('current_pr')}
 Code Diff:
-{observation.current_state.get('code_snippet', '')}
-
-Available Actions: {observation.available_actions}
+{json.dumps(observation.data.get('code_snippet', ''), indent=2)}
 
 ## Few-Shot Examples:
 
 Example 1: Missing type hints
-Issue: Function parameters lack type annotations
-Decision: {{"action_type": "detect_style_issue", "description": "Missing type hints"}}
+Decision: {{"action_type": "flag", "description": "Missing type hints", "confidence": 0.9}}
 
 Example 2: Security vulnerability
-Issue: Hardcoded credentials in code
-Decision: {{"action_type": "flag_security", "description": "Hardcoded API key"}}
+Decision: {{"action_type": "flag", "description": "Hardcoded secret", "confidence": 0.95}}
 
 Now analyze and respond with JSON:
 {{
-  "action_type": "[detect_style_issue|flag_bug|flag_security|suggest_improvement|approve_pr]",
-  "description": "detailed finding",
-  "confidence": [0.0-1.0],
-  "severity": "[low|medium|high]"
+  "action_type": "flag|approve",
+  "description": "finding",
+  "confidence": 0.85
 }}
 """
     
-    def _data_cleaning_prompt(self, observation: Observation) -> str:
-        """Few-shot prompt for data cleaning"""
+    def _content_moderation_prompt(self, observation: Observation) -> str:
+        """Few-shot prompt for content moderation"""
         return f"""
-You are a data quality engineer. Analyze the dataset and decide cleaning action.
+You are a content moderator. Analyze the content and decide on moderation action.
 
-Dataset State:
-{json.dumps(observation.current_state, indent=2)}
-
-Issues Detected:
-{json.dumps(observation.current_state.get('issues', {}), indent=2)}
-
-Available Actions: {observation.available_actions}
+Content:
+{json.dumps(observation.data.get('content', {}), indent=2)}
 
 ## Few-Shot Examples:
 
-Example 1: Duplicate rows
-Issue: ID 5 and 50 have identical data
-Decision: {{"action_type": "remove_duplicate", "record_id": "5"}}
+Example 1: Harmful content
+Decision: {{"action_type": "flag", "classification": "harmful", "confidence": 0.95}}
 
-Example 2: Missing values
-Issue: Email field is NULL in 12 records
-Decision: {{"action_type": "fill_missing", "field": "email", "strategy": "placeholder"}}
+Example 2: Safe content
+Decision: {{"action_type": "approve", "classification": "safe", "confidence": 0.90}}
 
 Now analyze and respond with JSON:
 {{
-  "action_type": "[remove_duplicate|fill_missing|remove_outlier|reformat_field|validate_constraints|complete_cleaning]",
-  "target_records": "which records to affect",
-  "strategy": "approach to take",
-  "confidence": [0.0-1.0]
+  "action_type": "approve|flag",
+  "classification": "safe|harmful|misleading",
+  "confidence": 0.85
 }}
 """
     
@@ -253,36 +237,32 @@ Now analyze and respond with JSON:
             else:
                 action_data = {}
             
-            # Map to valid actions for task
-            action_type = action_data.get('action_type')
-            if action_type not in observation.available_actions:
-                action_type = observation.available_actions[0]
-            
-            return Action(
-                action_type=action_type,
-                parameters=action_data.get('parameters', {}),
-                agent_reasoning=action_data.get('reasoning', ''),
-                confidence=float(action_data.get('confidence', 0.5))
+            # Create Action with available fields
+            action = Action(
+                action_type=action_data.get('action_type', 'approve'),
+                confidence=float(action_data.get('confidence', 0.5)),
+                reasoning=action_data.get('reasoning', ''),
+                classification=action_data.get('classification', ''),
             )
+            return action
             
         except Exception as e:
-            # Fallback to first available action
+            # Fallback to default action
             return Action(
-                action_type=observation.available_actions[0],
-                parameters={},
-                agent_reasoning="Fallback action due to parsing error",
-                confidence=0.3
+                action_type="approve",
+                confidence=0.3,
+                reasoning="Fallback action due to parsing error",
             )
 
 
 def evaluate_task(
-    task_type: str, 
+    task_type: TaskType, 
     inference_client: InferenceClient,
     num_episodes: int = 3
 ) -> Dict[str, float]:
     """Evaluate agent performance on a specific task"""
     
-    log_start(task=task_type, env=BENCHMARK, model=MODEL_NAME or "gpt-3.5-turbo")
+    log_start(task=task_type.value, env=BENCHMARK, model=MODEL_NAME or "gpt-3.5-turbo")
     
     agent = AutonomousAgent(inference_client)
     episode_scores = []
@@ -292,41 +272,70 @@ def evaluate_task(
     
     try:
         for episode in range(num_episodes):
-            # Initialize environment
-            env = OpenEnv(task_type=task_type)
-            observation = env.reset()
-            
-            done = False
-            step_count = 0
-            
-            while not done and step_count < MAX_STEPS:
-                # Agent decides action
-                action = agent.decide_action(observation)
+            try:
+                # Initialize environment (no task_type here - goes in reset)
+                env = OpenEnv()
                 
-                # Execute action
-                observation, reward, done, info = env.step(action)
+                # task_type is already a TaskType enum
+                observation = env.reset(task_type=task_type)
                 
-                step_count += 1
-                total_steps += 1
+                done = False
+                step_count = 0
                 
-                # Extract reward value
-                episode_reward = reward.immediate_reward if hasattr(reward, 'immediate_reward') else 0.0
-                all_rewards.append(episode_reward)
+                while not done and step_count < MAX_STEPS:
+                    try:
+                        # Agent decides action
+                        action = agent.decide_action(observation)
+                        
+                        # Execute action
+                        observation, reward, done, info = env.step(action)
+                        
+                        step_count += 1
+                        total_steps += 1
+                        
+                        # Extract reward value
+                        episode_reward = reward.immediate_reward if hasattr(reward, 'immediate_reward') else 0.0
+                        all_rewards.append(episode_reward)
+                        
+                        # Log step in EXACT spec format
+                        action_str = str(action.action_type) if hasattr(action, 'action_type') else "action"
+                        error_msg = None
+                        log_step(
+                            step=total_steps,
+                            action=action_str,
+                            reward=episode_reward,
+                            done=done,
+                            error=error_msg
+                        )
+                    except Exception as step_error:
+                        # Log step error but continue
+                        total_steps += 1
+                        log_step(
+                            step=total_steps,
+                            action="error",
+                            reward=0.0,
+                            done=True,
+                            error=str(step_error)[:50]
+                        )
+                        break
                 
-                # Log step in EXACT spec format
-                action_str = str(action.action_type) if hasattr(action, 'action_type') else "action"
-                error_msg = None
-                log_step(
-                    step=total_steps,
-                    action=action_str,
-                    reward=episode_reward,
-                    done=done,
-                    error=error_msg
-                )
-            
-            # Grade episode
-            score = env.grade()
-            episode_scores.append(score)
+                # Ensure at least 1 step was logged
+                if total_steps == 0:
+                    total_steps = 1
+                    log_step(step=1, action="init", reward=0.0, done=True, error="no steps executed")
+                
+                # Grade episode
+                try:
+                    score = env.grade()
+                    episode_scores.append(score)
+                except:
+                    episode_scores.append(0.0)
+            except Exception as ep_error:
+                # Episode failed, log it and continue
+                if total_steps == 0:
+                    total_steps = 1
+                    log_step(step=1, action="init", reward=0.0, done=True, error=str(ep_error)[:50])
+                pass
         
         # Compute statistics
         avg_score = sum(episode_scores) / len(episode_scores) if episode_scores else 0.0
@@ -379,7 +388,7 @@ def main():
         return
     
     # Evaluate all tasks
-    task_types = ["email_triage", "code_review", "data_cleaning"]
+    task_types = [TaskType.EMAIL_TRIAGE, TaskType.CODE_REVIEW, TaskType.CONTENT_MODERATION]
     
     for task_type in task_types:
         try:
