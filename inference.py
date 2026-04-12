@@ -1,330 +1,376 @@
 #!/usr/bin/env python3
 """
-Baseline inference script for OpenEnv using OpenAI API.
-
-Evaluates a model on all three task types and produces reproducible baseline scores.
-API credentials are read from HF_TOKEN environment variable.
+Baseline Inference Script for Autonomous Work OS
+Uses OpenAI API to evaluate agent performance
+Credentials read from HF_TOKEN environment variable
 """
 
 import os
 import json
 import sys
-from typing import Optional
-import time
-from dotenv import load_dotenv
+import logging
+from typing import Dict, List
+from datetime import datetime
 
-from openenv import OpenEnv, TaskType, Action
+from openai import OpenAI
+from pydantic import BaseModel
+
+# Import environment and models
+from environments.openenv import (
+    AutonomousWorkOSEnv, Observation, Action, Reward, 
+    TaskType
+)
+
+# Setup logging
+logging.basicConfig(level=logging.ERROR)
+logger = logging.getLogger(__name__)
+
+# Environment variables
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-3.5-turbo")
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+if not HF_TOKEN:
+    raise ValueError(
+        "HF_TOKEN not found. Please set HF_TOKEN environment variable"
+    )
 
 
-def get_api_token() -> str:
-    """Get API token from environment."""
-    load_dotenv()
-    token = os.getenv("HF_TOKEN")
-    if not token:
-        raise ValueError(
-            "HF_TOKEN environment variable not set. "
-            "Please set it to your OpenAI API key or Hugging Face token."
-        )
-    return token
+class BaselineConfig(BaseModel):
+    """Configuration for baseline evaluation"""
+    model_name: str = MODEL_NAME
+    api_base_url: str = API_BASE_URL
+    temperature: float = 0.3
+    max_tokens: int = 500
+    num_episodes: int = 3
+    timeout_seconds: int = 30
 
 
-def create_openai_action(
-    model_response: str,
-    action_type: str,
-    target_id: Optional[str] = None,
-) -> Action:
-    """
-    Create an Action from model response.
+class InferenceClient:
+    """Client for calling LLM inference via OpenAI"""
     
-    Args:
-        model_response: Text response from the model
-        action_type: Type of action
-        target_id: Optional target ID
+    def __init__(self, api_key: str = None, api_base: str = None, model: str = None):
+        """Initialize OpenAI client"""
+        self.api_key = api_key or HF_TOKEN
+        self.api_base = api_base or API_BASE_URL
+        self.model = model or MODEL_NAME
         
+        if not self.api_key:
+            raise ValueError("API key is required")
+        
+        self.client = OpenAI(api_key=self.api_key, base_url=self.api_base)
+    
+    def call_model(self, prompt: str) -> str:
+        """Call inference model via OpenAI client"""
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=500,
+                timeout=30
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            raise
+
+
+class AutonomousAgent:
+    """
+    Baseline agent that uses LLM reasoning to solve tasks
+    Uses few-shot prompting to guide decision-making
+    """
+    
+    def __init__(self, inference_client: InferenceClient):
+        self.client = inference_client
+        self.action_history = []
+    
+    def decide_action(self, observation: Observation) -> Action:
+        """
+        Decide next action based on observation
+        Uses LLM reasoning for intelligent decision-making
+        """
+        prompt = self._build_decision_prompt(observation)
+        
+        # Call LLM for decision
+        response = self.client.call_model(prompt)
+        
+        # Parse response into action
+        action = self._parse_action_response(response, observation)
+        
+        self.action_history.append({
+            "step": observation.step_number,
+            "action": action.action_type,
+            "confidence": action.confidence
+        })
+        
+        return action
+    
+    def _build_decision_prompt(self, observation: Observation) -> str:
+        """Build few-shot prompt for decision-making"""
+        
+        task_type = observation.task_type.value
+        
+        if task_type == "email_triage":
+            return self._email_triage_prompt(observation)
+        elif task_type == "code_review":
+            return self._code_review_prompt(observation)
+        elif task_type == "data_cleaning":
+            return self._data_cleaning_prompt(observation)
+        else:
+            return ""
+    
+    def _email_triage_prompt(self, observation: Observation) -> str:
+        """Few-shot prompt for email triage"""
+        return f"""
+You are an AI agent for email automation. Analyze the email below and decide the action.
+
+Current Email:
+{json.dumps(observation.current_state.get('current_email', {}), indent=2)}
+
+Context: {observation.context}
+Available Actions: {observation.available_actions}
+
+## Few-Shot Examples:
+
+Example 1:
+Email: From: ceo@meta.com, Subject: "Urgent: Board meeting"
+Decision: {{"action_type": "classify_email", "confidence": 0.95, "category": "work_critical"}}
+
+Example 2:
+Email: From: friend@personal.com, Subject: "Let's catch up"
+Decision: {{"action_type": "classify_email", "confidence": 0.90, "category": "personal"}}
+
+Example 3:
+Email: From: spam@vendor.com, Subject: "CLICK HERE: Amazing offer!!!"
+Decision: {{"action_type": "classify_email", "confidence": 0.98, "category": "spam"}}
+
+Now analyze the current email and respond with JSON only:
+{{
+  "action_type": "classify_email",
+  "category": "[work_critical|work_routine|personal|spam]",
+  "confidence": [0.0-1.0],
+  "reasoning": "brief explanation"
+}}
+"""
+    
+    def _code_review_prompt(self, observation: Observation) -> str:
+        """Few-shot prompt for code review"""
+        return f"""
+You are an AI code reviewer. Analyze the code change and identify issues.
+
+PR: {observation.current_state.get('current_pr')}
+Code Diff:
+{observation.current_state.get('code_snippet', '')}
+
+Available Actions: {observation.available_actions}
+
+## Few-Shot Examples:
+
+Example 1: Missing type hints
+Issue: Function parameters lack type annotations
+Decision: {{"action_type": "detect_style_issue", "description": "Missing type hints"}}
+
+Example 2: Security vulnerability
+Issue: Hardcoded credentials in code
+Decision: {{"action_type": "flag_security", "description": "Hardcoded API key"}}
+
+Now analyze and respond with JSON:
+{{
+  "action_type": "[detect_style_issue|flag_bug|flag_security|suggest_improvement|approve_pr]",
+  "description": "detailed finding",
+  "confidence": [0.0-1.0],
+  "severity": "[low|medium|high]"
+}}
+"""
+    
+    def _data_cleaning_prompt(self, observation: Observation) -> str:
+        """Few-shot prompt for data cleaning"""
+        return f"""
+You are a data quality engineer. Analyze the dataset and decide cleaning action.
+
+Dataset State:
+{json.dumps(observation.current_state, indent=2)}
+
+Issues Detected:
+{json.dumps(observation.current_state.get('issues', {}), indent=2)}
+
+Available Actions: {observation.available_actions}
+
+## Few-Shot Examples:
+
+Example 1: Duplicate rows
+Issue: ID 5 and 50 have identical data
+Decision: {{"action_type": "remove_duplicate", "record_id": "5"}}
+
+Example 2: Missing values
+Issue: Email field is NULL in 12 records
+Decision: {{"action_type": "fill_missing", "field": "email", "strategy": "placeholder"}}
+
+Now analyze and respond with JSON:
+{{
+  "action_type": "[remove_duplicate|fill_missing|remove_outlier|reformat_field|validate_constraints|complete_cleaning]",
+  "target_records": "which records to affect",
+  "strategy": "approach to take",
+  "confidence": [0.0-1.0]
+}}
+"""
+    
+    def _parse_action_response(self, response: str, observation: Observation) -> Action:
+        """Parse LLM response into Action object"""
+        try:
+            # Extract JSON from response
+            json_start = response.find('{')
+            json_end = response.rfind('}') + 1
+            
+            if json_start >= 0 and json_end > json_start:
+                action_json = response[json_start:json_end]
+                action_data = json.loads(action_json)
+            else:
+                action_data = {}
+            
+            # Map to valid actions for task
+            action_type = action_data.get('action_type')
+            if action_type not in observation.available_actions:
+                action_type = observation.available_actions[0]
+            
+            return Action(
+                action_type=action_type,
+                parameters=action_data.get('parameters', {}),
+                agent_reasoning=action_data.get('reasoning', ''),
+                confidence=float(action_data.get('confidence', 0.5))
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to parse action: {e}")
+            # Fallback to first available action
+            return Action(
+                action_type=observation.available_actions[0],
+                parameters={},
+                agent_reasoning="Fallback action due to parsing error",
+                confidence=0.3
+            )
+
+
+def evaluate_task(
+    task_type: str, 
+    inference_client: InferenceClient,
+    num_episodes: int = 3
+) -> Dict[str, float]:
+    """
+    Evaluate agent performance on a specific task
+    
     Returns:
-        Action instance
+        scores: Dict with episode scores and average
     """
-    return Action(
-        action_type=action_type,
-        target_id=target_id,
-        reasoning=model_response[:200] if model_response else None,
-        confidence=0.7,  # Fixed confidence for baseline
-    )
-
-
-def run_email_triage_baseline(env: OpenEnv) -> dict:
-    """
-    Run baseline on email triage task.
     
-    Simple strategy: classify emails based on sender domain patterns.
-    """
-    print("\n" + "=" * 60)
-    print("TASK 1: EMAIL TRIAGE (Easy)")
-    print("=" * 60)
+    print(f"[START] task={task_type}", flush=True)
     
-    obs = env.reset(task_type=TaskType.EMAIL_TRIAGE)
-    done = False
-    step_count = 0
+    agent = AutonomousAgent(inference_client)
+    episode_scores = []
+    total_steps = 0
     
-    print(f"Task initialized: {obs.task_name}")
-    print(f"Total emails to triage: {obs.data.get('total_emails', 0)}")
-    
-    # Simple heuristic-based approach
-    while not done and step_count < 20:
-        remaining = obs.data.get("remaining", [])
-        if not remaining:
-            break
+    for episode in range(num_episodes):
+        # Initialize environment
+        env = AutonomousWorkOSEnv(task_type=task_type)
+        observation = env.reset()
         
-        email = remaining[0]
-        email_id = email.get("id")
-        sender = email.get("sender", "")
+        done = False
+        step_count = 0
+        max_steps = 20
+        episode_reward = 0.0
         
-        # Simple classification heuristic
-        if "spam.com" in sender or "scam" in sender:
-            classification = "spam"
-        elif "company.com" in sender or "team@company" in sender:
-            classification = "work"
-        elif "marketing.com" in sender or "promo@" in sender:
-            classification = "promotional"
-        else:
-            classification = "personal"
+        while not done and step_count < max_steps:
+            # Agent decides action
+            action = agent.decide_action(observation)
+            
+            # Execute action
+            observation, reward, done, info = env.step(action)
+            
+            episode_reward += reward.immediate_reward
+            step_count += 1
+            total_steps += 1
+            
+            # Output structured step info
+            print(f"[STEP] step={total_steps} reward={reward.immediate_reward:.3f}", flush=True)
         
-        action = Action(
-            action_type="classify",
-            target_id=email_id,
-            classification=classification,
-            confidence=0.75,
-            reasoning=f"Classified based on sender domain: {sender}",
-        )
-        
-        result = env.step(action)
-        obs = result.observation
-        done = result.done
-        step_count += 1
-        
-        print(f"Step {step_count}: Classified {email_id} as '{classification}' "
-              f"(Reward: {result.reward.value:.3f})")
+        # Grade episode
+        score = env.grade()
+        episode_scores.append(score)
     
-    evaluation = env.evaluate_episode()
-    print(f"\nTask Score: {evaluation.get('final_score', 0.0):.3f}")
-    print(f"Total Steps: {evaluation.get('episode_steps', 0)}")
-    print(f"Total Reward: {evaluation.get('episode_reward', 0.0):.3f}")
+    # Compute statistics
+    avg_score = sum(episode_scores) / len(episode_scores)
     
-    return evaluation
-
-
-def run_code_review_baseline(env: OpenEnv) -> dict:
-    """
-    Run baseline on code review task.
+    print(f"[END] task={task_type} score={avg_score:.4f} steps={total_steps}", flush=True)
     
-    Simple strategy: flag all issues that mention 'bug' or common error patterns.
-    """
-    print("\n" + "=" * 60)
-    print("TASK 2: CODE REVIEW (Medium)")
-    print("=" * 60)
-    
-    obs = env.reset(task_type=TaskType.CODE_REVIEW)
-    done = False
-    step_count = 0
-    
-    print(f"Task initialized: {obs.task_name}")
-    print(f"Code blocks to review: {obs.data.get('total_issues', 0)}")
-    
-    # Simple pattern-based bug detection
-    issues_to_check = [
-        "issue_0",  # divide by zero
-        "issue_1",  # redeclaration
-        "issue_3",  # index out of bounds
-    ]
-    
-    for issue_id in issues_to_check:
-        if step_count >= 10:
-            break
-        
-        action = Action(
-            action_type="flag_issue",
-            target_id=issue_id,
-            reasoning="Detected potential bug in code",
-            confidence=0.8,
-        )
-        
-        result = env.step(action)
-        obs = result.observation
-        step_count += 1
-        
-        is_bug = result.info.get("action_info", {}).get("is_bug", False)
-        print(f"Step {step_count}: Flagged {issue_id} "
-              f"(Correct: {is_bug}, Reward: {result.reward.value:.3f})")
-    
-    # Make final decision
-    action = Action(
-        action_type="request_changes",
-        reasoning="Found potential bugs that need fixing",
-        confidence=0.8,
-    )
-    
-    result = env.step(action)
-    done = result.done
-    step_count += 1
-    print(f"Step {step_count}: Submitted decision 'REQUEST_CHANGES' "
-          f"(Reward: {result.reward.value:.3f})")
-    
-    evaluation = env.evaluate_episode()
-    print(f"\nTask Score: {evaluation.get('final_score', 0.0):.3f}")
-    print(f"Total Steps: {evaluation.get('episode_steps', 0)}")
-    print(f"Total Reward: {evaluation.get('episode_reward', 0.0):.3f}")
-    
-    return evaluation
-
-
-def run_content_moderation_baseline(env: OpenEnv) -> dict:
-    """
-    Run baseline on content moderation task.
-    
-    Simple strategy: flag items with obvious harmful keywords.
-    """
-    print("\n" + "=" * 60)
-    print("TASK 3: CONTENT MODERATION (Hard)")
-    print("=" * 60)
-    
-    obs = env.reset(task_type=TaskType.CONTENT_MODERATION)
-    done = False
-    step_count = 0
-    
-    print(f"Task initialized: {obs.task_name}")
-    print(f"Items to moderate: {obs.data.get('total_items', 0)}")
-    
-    # Simple keyword-based moderation
-    harmful_keywords = [
-        "Kill all",
-        "explosives",
-        "stupid and should die",
-        "OnlyFans",
-        "SCAM",
-    ]
-    
-    reviewed = set()
-    while not done and step_count < 30:
-        remaining = obs.data.get("remaining", [])
-        if not remaining:
-            break
-        
-        item_id = remaining[0]
-        if item_id in reviewed:
-            break
-        reviewed.add(item_id)
-        
-        # Get item content (note: in real obs it's hidden, but we can infer)
-        # For baseline, we'll check a few specific items known to be harmful
-        if item_id in ["item_0", "item_2", "item_4", "item_7", "item_9"]:
-            action = Action(
-                action_type="flag_content",
-                target_id=item_id,
-                reasoning="Content violates policy",
-                confidence=0.85,
-            )
-        else:
-            action = Action(
-                action_type="skip_review",
-                target_id=item_id,
-                reasoning="Content appears safe",
-                confidence=0.7,
-            )
-        
-        result = env.step(action)
-        obs = result.observation
-        done = result.done
-        step_count += 1
-        
-        is_harmful = result.info.get("action_info", {}).get("is_harmful")
-        action_type = action.action_type
-        print(f"Step {step_count}: {action_type} for {item_id} "
-              f"(Reward: {result.reward.value:.3f})")
-    
-    evaluation = env.evaluate_episode()
-    print(f"\nTask Score: {evaluation.get('final_score', 0.0):.3f}")
-    print(f"Total Steps: {evaluation.get('episode_steps', 0)}")
-    print(f"Total Reward: {evaluation.get('episode_reward', 0.0):.3f}")
-    
-    return evaluation
+    return {
+        "task_type": task_type,
+        "num_episodes": num_episodes,
+        "scores": episode_scores,
+        "average": avg_score,
+        "max": max(episode_scores),
+        "min": min(episode_scores),
+        "std_dev": (sum((s - avg_score) ** 2 for s in episode_scores) / len(episode_scores)) ** 0.5
+    }
 
 
 def main():
-    """Run baseline inference on all tasks."""
-    print("╔" + "=" * 58 + "╗")
-    print("║" + " " * 10 + "MetaOpenEnv Baseline Inference" + " " * 18 + "║")
-    print("╚" + "=" * 58 + "╝")
+    """Main evaluation loop"""
     
-    # Get API token
+    config = BaselineConfig()
+    
+    # Initialize inference client
     try:
-        api_token = get_api_token()
-        print(f"\n✓ API token loaded (length: {len(api_token)})")
+        client = InferenceClient()
     except ValueError as e:
-        print(f"\n⚠ Warning: {e}")
-        print("Proceeding with heuristic-based baseline (no API calls)")
+        print(f"[ERROR] Failed to initialize client: {e}", flush=True)
+        return
     
-    # Initialize environment
-    env = OpenEnv()
-    print(f"✓ Environment initialized: {env.config.name} v{env.config.version}")
+    # Evaluate all tasks
+    all_results = {
+        "timestamp": datetime.now().isoformat(),
+        "config": config.dict(),
+        "task_results": []
+    }
     
-    # Run tasks
-    results = {}
+    task_types = ["email_triage", "code_review", "data_cleaning"]
     
-    try:
-        results["email_triage"] = run_email_triage_baseline(env)
-    except Exception as e:
-        print(f"✗ Email Triage task failed: {e}")
-        results["email_triage"] = {"error": str(e)}
+    for task_type in task_types:
+        try:
+            result = evaluate_task(
+                task_type=task_type,
+                inference_client=client,
+                num_episodes=config.num_episodes
+            )
+            all_results["task_results"].append(result)
+            
+        except Exception as e:
+            print(f"[ERROR] Task evaluation failed for {task_type}: {e}", flush=True)
+            all_results["task_results"].append({
+                "task_type": task_type,
+                "error": str(e)
+            })
     
-    try:
-        results["code_review"] = run_code_review_baseline(env)
-    except Exception as e:
-        print(f"✗ Code Review task failed: {e}")
-        results["code_review"] = {"error": str(e)}
-    
-    try:
-        results["content_moderation"] = run_content_moderation_baseline(env)
-    except Exception as e:
-        print(f"✗ Content Moderation task failed: {e}")
-        results["content_moderation"] = {"error": str(e)}
-    
-    # Summary
-    print("\n" + "=" * 60)
-    print("BASELINE EVALUATION SUMMARY")
-    print("=" * 60)
-    
-    total_score = 0.0
-    num_tasks = 0
-    
-    for task_name, task_result in results.items():
-        if "error" not in task_result:
-            score = task_result.get("final_score", 0.0)
-            total_score += score
-            num_tasks += 1
-            print(f"{task_name}: {score:.3f}")
-        else:
-            print(f"{task_name}: ERROR")
-    
-    if num_tasks > 0:
-        avg_score = total_score / num_tasks
-        print(f"\nAverage Score: {avg_score:.3f}")
+    # Aggregate results
+    all_results["summary"] = {
+        "overall_average": (
+            sum(r["average"] for r in all_results["task_results"] 
+                if "average" in r) / 
+            len([r for r in all_results["task_results"] if "average" in r])
+        ),
+        "difficulty_levels": {
+            "easy": 0.0,  # Email triage
+            "medium": 0.0,  # Code review
+            "hard": 0.0  # Data cleaning
+        }
+    }
     
     # Save results
-    output_file = "baseline_results.json"
-    with open(output_file, "w") as f:
-        json.dump({
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "model": "baseline-heuristic",
-            "results": results,
-            "summary": {
-                "total_tasks": num_tasks,
-                "average_score": total_score / num_tasks if num_tasks > 0 else 0.0,
-            },
-        }, f, indent=2)
+    results_file = "evaluation_results.json"
+    with open(results_file, "w") as f:
+        json.dump(all_results, f, indent=2)
     
-    print(f"\n✓ Results saved to {output_file}")
-    print("=" * 60)
-
+    return all_results
 
 if __name__ == "__main__":
     main()
